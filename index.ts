@@ -182,6 +182,88 @@ server.tool(
   }
 );
 
+// --- update_video tool ---
+
+const updateVideoSchema = z.object({
+  files: z.string().optional().describe(
+    'A JSON string of {path: code} with only the changed files. Unchanged files are kept automatically from the previous create_video call.'
+  ),
+  entryFile: z.string().optional().describe('Change the entry file path.'),
+  title: z.string().optional().describe("Update the video title."),
+  durationInFrames: z.number().optional().describe("Update total duration in frames."),
+  fps: z.number().optional().describe("Update frames per second."),
+  width: z.number().optional().describe("Update width in pixels."),
+  height: z.number().optional().describe("Update height in pixels."),
+});
+
+server.tool(
+  {
+    name: "update_video",
+    description:
+      "Edit an existing video project without replacing it. " +
+      "Send only the files that changed — all other files from the previous call are preserved automatically. " +
+      "You can also update metadata (title, fps, durationInFrames, width, height). " +
+      "Requires a prior create_video call in the same session.",
+    schema: updateVideoSchema as any,
+    widget: {
+      name: "remotion-player",
+      invoking: "Recompiling project...",
+      invoked: "Video updated",
+    },
+  },
+  async (rawParams: z.infer<typeof updateVideoSchema>, ctx) => {
+    const sessionId = ctx.session?.sessionId ?? "default";
+
+    const previous = getSessionProject(sessionId);
+    if (!previous) {
+      return failProject("No previous project found in this session. Call create_video first.");
+    }
+
+    let updatedFiles: Record<string, string> = {};
+    if (rawParams.files) {
+      try {
+        const parsed = JSON.parse(rawParams.files);
+        if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) {
+          return failProject('files must be a JSON object like {"\/src\/Video.tsx": "...code..."}');
+        }
+        updatedFiles = parsed as Record<string, string>;
+      } catch {
+        return failProject('files must be a valid JSON string, e.g. \'{"\/src\/Video.tsx":"...code..."}\'');
+      }
+    }
+
+    const mergedFiles = { ...previous.files, ...updatedFiles };
+
+    const project = {
+      title: rawParams.title ?? previous.title,
+      compositionId: previous.compositionId,
+      width: rawParams.width ?? previous.width,
+      height: rawParams.height ?? previous.height,
+      fps: rawParams.fps ?? previous.fps,
+      durationInFrames: rawParams.durationInFrames ?? previous.durationInFrames,
+      entryFile: rawParams.entryFile ?? previous.entryFile,
+      files: mergedFiles,
+      defaultProps: previous.defaultProps,
+      inputProps: previous.inputProps,
+    };
+
+    const parseResult = projectVideoSchema.safeParse(project);
+    if (!parseResult.success) {
+      return failProject(`Invalid input: ${formatZodIssues(parseResult.error)}`);
+    }
+
+    const changedCount = Object.keys(updatedFiles).length;
+    const statusLines = [
+      changedCount > 0
+        ? `Updated ${changedCount} file(s). Total: ${Object.keys(mergedFiles).length} file(s).`
+        : "Metadata updated (no file changes).",
+      `Player URL: ${playerUrl(sessionId)}`,
+    ];
+
+    return compileAndRespondWithProject(parseResult.data, sessionId, statusLines, "update_video");
+  }
+);
+
 // --- render_video tool ---
 
 const renderVideoSchema = z.object({
