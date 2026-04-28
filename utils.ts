@@ -3,6 +3,7 @@ import { z } from "zod";
 import { build, type Loader, type Plugin } from "esbuild";
 import path from "node:path";
 import { writeFile, readFile, mkdir } from "node:fs/promises";
+import { randomUUID } from "node:crypto";
 import * as ReactModule from "react";
 import * as ReactJsxRuntimeModule from "react/jsx-runtime";
 import * as ReactJsxDevRuntimeModule from "react/jsx-dev-runtime";
@@ -356,29 +357,62 @@ export type ProjectVideoInput = {
   inputProps: Record<string, unknown>;
 };
 
-const sessionProjects = new Map<string, SessionProjectState>();
 const compiledProjects = new Map<string, VideoProjectData>();
-const MAX_SESSION_PROJECTS = 250;
+const MAX_COMPILED = 250;
 
-const SESSIONS_DIR = process.env.OUTPUT_DIR
-  ? path.join(process.env.OUTPUT_DIR, "sessions")
-  : "/data-criacoes/sessions";
+// Video storage root — same volume as rendered MP4s
+const VIDEOS_DIR = process.env.OUTPUT_DIR
+  ? path.join(process.env.OUTPUT_DIR, "videos")
+  : "/data-criacoes/videos";
 
-async function saveSessionToDisk(sessionId: string, project: SessionProjectState): Promise<void> {
+// ─── Video ID generation ─────────────────────────────────────────────────────
+
+export function generateVideoId(): string {
+  // 8-char hex — 4 billion possibilities, URL-safe
+  return randomUUID().split("-")[0];
+}
+
+// ─── Version persistence ──────────────────────────────────────────────────────
+
+export type VideoVersion = SessionProjectState & {
+  version: number;
+  message: string;
+  timestamp: string;
+};
+
+export async function saveVideoVersion(
+  videoId: string,
+  version: number,
+  project: SessionProjectState,
+  message: string
+): Promise<void> {
   try {
-    await mkdir(SESSIONS_DIR, { recursive: true });
-    const filePath = path.join(SESSIONS_DIR, `${sessionId}.json`);
-    await writeFile(filePath, JSON.stringify(project), "utf-8");
+    const dir = path.join(VIDEOS_DIR, videoId);
+    await mkdir(dir, { recursive: true });
+    const data: VideoVersion = { ...project, version, message, timestamp: new Date().toISOString() };
+    await writeFile(path.join(dir, `v${version}.json`), JSON.stringify(data), "utf-8");
+    await writeFile(path.join(dir, "current.txt"), String(version), "utf-8");
   } catch {
-    // Non-fatal: in-memory Map is still the primary store
+    // Non-fatal — compiled bundle and in-memory Map still work
   }
 }
 
-async function loadSessionFromDisk(sessionId: string): Promise<SessionProjectState | null> {
+export async function getLatestVersionNumber(videoId: string): Promise<number | null> {
   try {
-    const filePath = path.join(SESSIONS_DIR, `${sessionId}.json`);
-    const raw = await readFile(filePath, "utf-8");
-    return JSON.parse(raw) as SessionProjectState;
+    const raw = await readFile(path.join(VIDEOS_DIR, videoId, "current.txt"), "utf-8");
+    const n = parseInt(raw.trim(), 10);
+    return isNaN(n) ? null : n;
+  } catch {
+    return null;
+  }
+}
+
+export async function loadVideoVersion(videoId: string, version?: number): Promise<VideoVersion | null> {
+  try {
+    const v = version ?? (await getLatestVersionNumber(videoId));
+    if (!v) return null;
+    const raw = await readFile(path.join(VIDEOS_DIR, videoId, `v${v}.json`), "utf-8");
+    return JSON.parse(raw) as VideoVersion;
   } catch {
     return null;
   }
@@ -430,41 +464,19 @@ function cloneFileMap(value: Record<string, string>): Record<string, string> {
   return { ...value };
 }
 
-function rememberSessionProject(sessionId: string, project: SessionProjectState): void {
-  if (!sessionId) {
-    return;
-  }
-
-  if (sessionProjects.has(sessionId)) {
-    sessionProjects.delete(sessionId);
-  }
-  sessionProjects.set(sessionId, project);
-
-  while (sessionProjects.size > MAX_SESSION_PROJECTS) {
-    const oldestKey = sessionProjects.keys().next().value;
-    if (typeof oldestKey !== "string") {
-      break;
-    }
-    sessionProjects.delete(oldestKey);
-  }
-
-  // Persist to disk so state survives across instances and restarts
-  saveSessionToDisk(sessionId, project).catch(() => {});
-}
-
-function rememberCompiledProject(sessionId: string, data: VideoProjectData): void {
-  if (!sessionId) return;
-  if (compiledProjects.has(sessionId)) compiledProjects.delete(sessionId);
-  compiledProjects.set(sessionId, data);
-  while (compiledProjects.size > MAX_SESSION_PROJECTS) {
+function rememberCompiledProject(videoId: string, data: VideoProjectData): void {
+  if (!videoId) return;
+  if (compiledProjects.has(videoId)) compiledProjects.delete(videoId);
+  compiledProjects.set(videoId, data);
+  while (compiledProjects.size > MAX_COMPILED) {
     const oldest = compiledProjects.keys().next().value;
     if (typeof oldest === "string") compiledProjects.delete(oldest);
     else break;
   }
 }
 
-export function getCompiledProject(sessionId: string): VideoProjectData | null {
-  return compiledProjects.get(sessionId) ?? null;
+export function getCompiledProject(videoId: string): VideoProjectData | null {
+  return compiledProjects.get(videoId) ?? null;
 }
 
 export function failProject(
@@ -488,20 +500,30 @@ export function failProject(
 }
 
 export async function getSessionProject(sessionId: string): Promise<SessionProjectState | null> {
-  const inMemory = sessionProjects.get(sessionId);
-  if (inMemory) return inMemory;
-  // Fallback to disk (handles multi-instance and server restart scenarios)
-  const fromDisk = await loadSessionFromDisk(sessionId);
-  if (fromDisk) {
-    // Restore to memory map for subsequent calls
-    sessionProjects.set(sessionId, fromDisk);
+  // Legacy shim: load latest version from disk if available
+  // (sessionId used here as a fallback key; callers should prefer loadVideoVersion)
+  return loadSessionFromDiskLegacy(sessionId);
+}
+
+async function loadSessionFromDiskLegacy(key: string): Promise<SessionProjectState | null> {
+  // Try the old sessions path for backward compat
+  try {
+    const filePath = path.join(
+      process.env.OUTPUT_DIR ?? "/data-criacoes",
+      "sessions",
+      `${key}.json`
+    );
+    const raw = await readFile(filePath, "utf-8");
+    return JSON.parse(raw) as SessionProjectState;
+  } catch {
+    return null;
   }
-  return fromDisk;
 }
 
 export async function compileAndRespondWithProject(
   parsedInput: ProjectVideoInput,
-  sessionId: string,
+  videoId: string,
+  version: number,
   statusPrefixLines: string[],
   iterateToolName: "create_video" | "update_video"
 ) {
@@ -544,7 +566,10 @@ export async function compileAndRespondWithProject(
     defaultProps: cloneRecord(defaultProps),
     inputProps: cloneRecord(inputProps),
   };
-  rememberSessionProject(sessionId, currentState);
+
+  // Persist this version to disk (like a git commit)
+  const versionMessage = statusPrefixLines.find((l) => l.startsWith("Version message:"))?.replace("Version message: ", "") ?? `v${version}`;
+  await saveVideoVersion(videoId, version, currentState, versionMessage);
 
   let bundle: string;
   try {
@@ -562,20 +587,20 @@ export async function compileAndRespondWithProject(
     inputProps,
   });
 
-  rememberCompiledProject(sessionId, projectData);
+  rememberCompiledProject(videoId, projectData);
 
   return widget({
     props: { videoProject: JSON.stringify(projectData) },
     output: text(
       [
-        ...statusPrefixLines,
-        `Created video project \"${title}\".`,
+        ...statusPrefixLines.filter((l) => !l.startsWith("Version message:")),
+        `Video ID: ${videoId}  |  Version: v${version}`,
         `Entry: ${entryFile} (${Object.keys(files).length} files).`,
-        `Fallback meta: ${width}x${height}, ${fps}fps, ${durationInFrames} frames (~${(
+        `${width}x${height}, ${fps}fps, ${durationInFrames} frames (~${(
           durationInFrames / fps
         ).toFixed(1)}s).`,
-        "The player is using merged props (defaultProps + inputProps).",
-        `To iterate: update files, props, or metadata and call ${iterateToolName} again.`,
+        `To edit: call update_video with videoId "${videoId}" and only the changed files/metadata.`,
+        `To render: call render_video with videoId "${videoId}".`,
       ]
         .filter((line) => line.trim().length > 0)
         .join("\n")

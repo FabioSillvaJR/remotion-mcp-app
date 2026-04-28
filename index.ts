@@ -1,4 +1,4 @@
-import { MCPServer, text } from "mcp-use/server";
+﻿import { MCPServer, text } from "mcp-use/server";
 import { z } from "zod";
 import { readFile } from "node:fs/promises";
 import { join } from "node:path";
@@ -16,8 +16,10 @@ import {
   compileAndRespondWithProject,
   failProject,
   formatZodIssues,
-  getSessionProject,
   getCompiledProject,
+  generateVideoId,
+  loadVideoVersion,
+  getLatestVersionNumber,
 } from "./utils.js";
 import { renderProject, OUTPUT_DIR } from "./render.js";
 
@@ -32,8 +34,8 @@ function baseUrl(): string {
   ).replace(/\/$/, "");
 }
 
-function playerUrl(sessionId: string): string {
-  return `${baseUrl()}/player/${sessionId}`;
+function playerUrl(videoId: string): string {
+  return `${baseUrl()}/player/${videoId}`;
 }
 
 const server = new MCPServer({
@@ -88,7 +90,7 @@ server.tool(
   async () => text(RULE_REMOTION_TRIMMING)
 );
 
-// --- Video tool ---
+// --- Video tool schemas ---
 
 const projectVideoSchema = z.object({
   title: z.string().optional().default(DEFAULT_META.title),
@@ -103,25 +105,26 @@ const projectVideoSchema = z.object({
   inputProps: z.record(z.string(), z.unknown()).optional().default({}),
 });
 
+// --- create_video ---
+
 const createVideoSchema = z.object({
   files: z.string().describe(
-    'REQUIRED. A JSON string of {path: code} mapping file paths to source code. Example: \'{"\/src\/Video.tsx":"import {AbsoluteFill} from \\"remotion\\";\\nexport default function Video(){return <AbsoluteFill\/>;}"}\'. For edits, only include changed files — unchanged files are kept from the previous call.'
+    'REQUIRED. A JSON string mapping file paths to source code. Example: \'{"\/src\/Video.tsx":"...code..."}\''
   ),
-  entryFile: z.string().optional().describe('Entry file path (default: "/src/Video.tsx"). Must match a key in files.'),
-  title: z.string().optional().describe("Title shown in the video player"),
-  durationInFrames: z.number().optional().describe("Total duration in frames (default: 150)"),
-  fps: z.number().optional().describe("Frames per second (default: 30)"),
-  width: z.number().optional().describe("Width in pixels (default: 1920)"),
-  height: z.number().optional().describe("Height in pixels (default: 1080)"),
+  entryFile: z.string().optional().describe('Entry file path (default: "/src/Video.tsx").'),
+  title: z.string().optional().describe("Video title shown in the player."),
+  durationInFrames: z.number().optional().describe("Total duration in frames (default: 150)."),
+  fps: z.number().optional().describe("Frames per second (default: 30)."),
+  width: z.number().optional().describe("Width in pixels (default: 1920)."),
+  height: z.number().optional().describe("Height in pixels (default: 1080)."),
 });
 
 server.tool(
   {
     name: "create_video",
     description:
-      "Create or update a video. The `files` param is a JSON string (not an object) mapping file paths to source code. " +
-      'Pass it as: files: JSON.stringify({"/src/Video.tsx": "...your code..."}). ' +
-      "For edits, only include changed files — previous files are preserved automatically.",
+      "Create a new video project. Returns a unique videoId that you MUST save â€” it is required for update_video, get_video_code, and render_video. " +
+      "The `files` param is a JSON string (not an object) mapping file paths to source code.",
     schema: createVideoSchema as any,
     widget: {
       name: "remotion-player",
@@ -129,10 +132,7 @@ server.tool(
       invoked: "Video ready",
     },
   },
-  async (rawParams: z.infer<typeof createVideoSchema>, ctx) => {
-    const sessionId = ctx.session?.sessionId ?? "default";
-
-    // Parse files from JSON string
+  async (rawParams: z.infer<typeof createVideoSchema>) => {
     let files: Record<string, string>;
     try {
       const parsed = JSON.parse(rawParams.files);
@@ -145,26 +145,17 @@ server.tool(
     }
 
     if (Object.keys(files).length === 0) {
-      return failProject('files must contain at least one file entry.');
+      return failProject("files must contain at least one file entry.");
     }
 
-    // Merge with previous session state (if any)
-    const previous = await getSessionProject(sessionId);
-    const mergedFiles = previous
-      ? { ...previous.files, ...files }
-      : files;
-
     const project = {
-      title: rawParams.title ?? previous?.title,
-      compositionId: previous?.compositionId,
-      width: rawParams.width ?? previous?.width,
-      height: rawParams.height ?? previous?.height,
-      fps: rawParams.fps ?? previous?.fps,
-      durationInFrames: rawParams.durationInFrames ?? previous?.durationInFrames,
-      entryFile: rawParams.entryFile ?? previous?.entryFile,
-      files: mergedFiles,
-      defaultProps: previous?.defaultProps,
-      inputProps: previous?.inputProps,
+      title: rawParams.title,
+      width: rawParams.width,
+      height: rawParams.height,
+      fps: rawParams.fps,
+      durationInFrames: rawParams.durationInFrames,
+      entryFile: rawParams.entryFile,
+      files,
     };
 
     const parseResult = projectVideoSchema.safeParse(project);
@@ -172,23 +163,28 @@ server.tool(
       return failProject(`Invalid input: ${formatZodIssues(parseResult.error)}`);
     }
 
-    const statusLines: string[] = [];
-    if (previous) {
-      statusLines.push("Merged with previous project.");
-    }
-    statusLines.push(`Player URL: ${playerUrl(sessionId)}`);
+    const videoId = generateVideoId();
+    const version = 1;
 
-    return compileAndRespondWithProject(parseResult.data, sessionId, statusLines, "create_video");
+    return compileAndRespondWithProject(
+      parseResult.data,
+      videoId,
+      version,
+      [`Player URL: ${playerUrl(videoId)}`],
+      "create_video"
+    );
   }
 );
 
-// --- update_video tool ---
+// --- update_video ---
 
 const updateVideoSchema = z.object({
+  videoId: z.string().describe("REQUIRED. The videoId returned by create_video."),
+  message: z.string().optional().describe("Short description of this change (like a commit message)."),
   files: z.string().optional().describe(
-    'A JSON string of {path: code} with only the changed files. Unchanged files are kept automatically from the previous create_video call.'
+    "A JSON string with ONLY the changed files. Unchanged files are kept automatically."
   ),
-  entryFile: z.string().optional().describe('Change the entry file path.'),
+  entryFile: z.string().optional().describe("Change the entry file path."),
   title: z.string().optional().describe("Update the video title."),
   durationInFrames: z.number().optional().describe("Update total duration in frames."),
   fps: z.number().optional().describe("Update frames per second."),
@@ -200,10 +196,10 @@ server.tool(
   {
     name: "update_video",
     description:
-      "Edit an existing video project without replacing it. " +
-      "Send only the files that changed — all other files from the previous call are preserved automatically. " +
-      "You can also update metadata (title, fps, durationInFrames, width, height). " +
-      "Requires a prior create_video call in the same session.",
+      "Edit an existing video. Requires the videoId returned by create_video. " +
+      "Send only the files that changed â€” all other files are preserved automatically. " +
+      "Each call creates a new version (like a git commit). " +
+      "Include a 'message' describing what changed.",
     schema: updateVideoSchema as any,
     widget: {
       name: "remotion-player",
@@ -211,12 +207,16 @@ server.tool(
       invoked: "Video updated",
     },
   },
-  async (rawParams: z.infer<typeof updateVideoSchema>, ctx) => {
-    const sessionId = ctx.session?.sessionId ?? "default";
+  async (rawParams: z.infer<typeof updateVideoSchema>) => {
+    const { videoId } = rawParams;
 
-    const previous = await getSessionProject(sessionId);
+    const latestVersion = await getLatestVersionNumber(videoId);
+    const previous = latestVersion ? await loadVideoVersion(videoId, latestVersion) : null;
+
     if (!previous) {
-      return failProject("No previous project found in this session. Call create_video first.");
+      return failProject(
+        `No video found with ID "${videoId}". Call create_video first and save the returned videoId.`
+      );
     }
 
     let updatedFiles: Record<string, string> = {};
@@ -233,6 +233,7 @@ server.tool(
     }
 
     const mergedFiles = { ...previous.files, ...updatedFiles };
+    const newVersion = previous.version + 1;
 
     const project = {
       title: rawParams.title ?? previous.title,
@@ -255,42 +256,53 @@ server.tool(
     const changedCount = Object.keys(updatedFiles).length;
     const statusLines = [
       changedCount > 0
-        ? `Updated ${changedCount} file(s). Total: ${Object.keys(mergedFiles).length} file(s).`
+        ? `Changed ${changedCount} file(s). Total: ${Object.keys(mergedFiles).length} file(s).`
         : "Metadata updated (no file changes).",
-      `Player URL: ${playerUrl(sessionId)}`,
+      `Player URL: ${playerUrl(videoId)}`,
+      `Version message: ${rawParams.message ?? `v${newVersion}`}`,
     ];
 
-    return compileAndRespondWithProject(parseResult.data, sessionId, statusLines, "update_video");
+    return compileAndRespondWithProject(parseResult.data, videoId, newVersion, statusLines, "update_video");
   }
 );
 
-// --- get_video_code tool ---
+// --- get_video_code ---
+
+const getVideoCodeSchema = z.object({
+  videoId: z.string().describe("The videoId returned by create_video."),
+  version: z.number().optional().describe("Specific version number. Omit to get the latest."),
+});
 
 server.tool(
   {
     name: "get_video_code",
     description:
-      "Returns the full source code and metadata of the current video project in this session. " +
-      "Use this before calling update_video to inspect the current files and understand what needs to change. " +
-      "Requires a prior create_video call in the same session.",
-    schema: z.object({}),
+      "Returns the full source code and metadata of a video project. " +
+      "Use before update_video to inspect current state. " +
+      "Optionally specify a version to retrieve an older snapshot.",
+    schema: getVideoCodeSchema as any,
   },
-  async (_params: Record<string, never>, ctx) => {
-    const sessionId = ctx.session?.sessionId ?? "default";
-    const project = await getSessionProject(sessionId);
+  async (rawParams: z.infer<typeof getVideoCodeSchema>) => {
+    const { videoId, version } = rawParams;
+    const project = await loadVideoVersion(videoId, version);
+
     if (!project) {
-      return text("No video project found in this session. Call create_video first.");
+      return text(
+        `No video found with ID "${videoId}"${version ? ` at version ${version}` : ""}. Call create_video first.`
+      );
     }
 
     const filesSummary = Object.entries(project.files)
-      .map(([path, code]) => `--- ${path} ---\n${code}`)
+      .map(([p, code]) => `--- ${p} ---\n${code}`)
       .join("\n\n");
 
     return text(
       [
+        `Video ID: ${videoId}`,
+        `Version: v${project.version}  |  ${project.message}  |  ${project.timestamp}`,
         `Title: ${project.title}`,
         `Entry file: ${project.entryFile}`,
-        `Resolution: ${project.width}×${project.height}`,
+        `Resolution: ${project.width}Ã—${project.height}`,
         `FPS: ${project.fps}`,
         `Duration: ${project.durationInFrames} frames (${(project.durationInFrames / project.fps).toFixed(2)}s)`,
         `Files (${Object.keys(project.files).length}):`,
@@ -301,30 +313,30 @@ server.tool(
   }
 );
 
-// --- render_video tool ---
+// --- render_video ---
 
 const renderVideoSchema = z.object({
-  sessionId: z.string().optional().describe(
-    "Session ID returned by create_video. If omitted, the current session is used."
-  ),
+  videoId: z.string().describe("The videoId returned by create_video."),
 });
 
 server.tool(
   {
     name: "render_video",
     description:
-      "Render the current video project to an MP4 file saved in the /data-criacoes volume. " +
-      "Returns the download URL when complete. Call this after create_video when the user wants a rendered file.",
+      "Render a video project to MP4. Requires the videoId returned by create_video. " +
+      "Returns a download URL when complete.",
     schema: renderVideoSchema as any,
   },
-  async (rawParams: z.infer<typeof renderVideoSchema>, ctx) => {
-    const sid = rawParams.sessionId ?? ctx.session?.sessionId ?? "default";
-    const project = await getSessionProject(sid);
+  async (rawParams: z.infer<typeof renderVideoSchema>) => {
+    const { videoId } = rawParams;
+    const project = await loadVideoVersion(videoId);
+
     if (!project) {
-      return text(`No video project found for session "${sid}". Call create_video first.`);
+      return text(`No video found with ID "${videoId}". Call create_video first.`);
     }
+
     try {
-      const filename = await renderProject(sid, project);
+      const filename = await renderProject(videoId, project);
       const downloadUrl = `${baseUrl()}/download/${filename}`;
       return text(
         [
@@ -346,7 +358,7 @@ server.app.get("/.well-known/openai-apps-challenge", (c) => {
 });
 
 // Serve the standalone player HTML
-server.app.get("/player/:sessionId", async (c) => {
+server.app.get("/player/:videoId", async (c) => {
   const playerBundlePath = join(process.cwd(), "dist", "player-bundle.js");
   let bundleJs = "";
   try {
@@ -377,24 +389,26 @@ server.app.get("/player/:sessionId", async (c) => {
 });
 
 // Return project data as JSON (used by the player page)
-server.app.get("/api/project/:sessionId", (c) => {
-  const sid = c.req.param("sessionId");
-  const project = getCompiledProject(sid);
-  if (!project) {
-    return c.json({ error: "Session not found or not yet compiled." }, 404);
+server.app.get("/api/project/:videoId", async (c) => {
+  const vid = c.req.param("videoId");
+  // Try compiled bundle in memory first (fastest path)
+  const compiled = getCompiledProject(vid);
+  if (compiled) {
+    return c.json(compiled);
   }
-  return c.json(project);
+  // Fallback: not yet compiled in this instance (e.g. after restart)
+  return c.json({ error: "Project not found or not yet compiled." }, 404);
 });
 
-// Trigger server-side render
-server.app.post("/render/:sessionId", async (c) => {
-  const sid = c.req.param("sessionId");
-  const project = await getSessionProject(sid);
+// Trigger server-side render via HTTP
+server.app.post("/render/:videoId", async (c) => {
+  const vid = c.req.param("videoId");
+  const project = await loadVideoVersion(vid);
   if (!project) {
-    return c.json({ error: `No project found for session "${sid}". Call create_video first.` }, 404);
+    return c.json({ error: `No project found for videoId "${vid}". Call create_video first.` }, 404);
   }
   try {
-    const filename = await renderProject(sid, project);
+    const filename = await renderProject(vid, project);
     return c.json({ filename });
   } catch (err) {
     return c.json({ error: (err as Error).message }, 500);
