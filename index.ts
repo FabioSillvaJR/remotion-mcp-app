@@ -411,25 +411,11 @@ server.app.get("/video/:videoId", async (c) => {
     return c.json(status);
   }
 
-  // Binary download: if done and client accepts video or has ?download param
-  if (status?.status === "done") {
-    const wantsDownload = c.req.query("download") !== undefined || accept.includes("video/");
-    if (wantsDownload) {
-      const filePath = join(OUTPUT_DIR, status.filename);
-      if (!existsSync(filePath)) return c.text("File not found.", 404);
-      const data = await readFile(filePath);
-      return c.body(data, 200, {
-        "Content-Type": "video/mp4",
-        "Content-Disposition": `attachment; filename="${status.filename}"`,
-      });
-    }
-  }
-
   // HTML status page
   const progressPct = status?.status === "rendering" ? Math.round(status.progress * 100) : null;
   const isDone = status?.status === "done";
   const isFailed = status?.status === "failed";
-  const videoUrl = isDone ? `/video/${vid}?download` : null;
+  const videoUrl = isDone ? `/video/${vid}/download` : null;
 
   const html = `<!DOCTYPE html>
 <html lang="en">
@@ -437,7 +423,6 @@ server.app.get("/video/:videoId", async (c) => {
   <meta charset="UTF-8"/>
   <meta name="viewport" content="width=device-width,initial-scale=1"/>
   <title>Render — ${vid}</title>
-  ${!isDone ? `<meta http-equiv="refresh" content="3"/>` : ""}
   <style>
     *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
     body { background: #0d0d0d; color: #e8e8e8; font-family: system-ui, sans-serif;
@@ -450,7 +435,8 @@ server.app.get("/video/:videoId", async (c) => {
     .badge.failed    { background: #4a1a1a; color: #ff9090; }
     .bar-wrap { width: 320px; height: 8px; background: #222; border-radius: 4px; overflow: hidden; }
     .bar      { height: 100%; background: #5b8cff; border-radius: 4px;
-                transition: width .4s ease; width: ${progressPct ?? 0}%; }
+                transition: width .6s ease; width: ${progressPct ?? 0}%; }
+    #pct-label { font-size: .9rem; color: #aac0ff; }
     video { max-width: min(860px, 100%); border-radius: 8px; background: #000; }
     a.dl { display: inline-block; padding: 12px 32px; background: #5b8cff; color: #fff;
            border-radius: 8px; font-weight: 600; text-decoration: none; font-size: 1rem; }
@@ -464,19 +450,77 @@ server.app.get("/video/:videoId", async (c) => {
   <span class="badge ${status?.status ?? "rendering"}">
     ${isDone ? "Done" : isFailed ? "Failed" : `Rendering… ${progressPct ?? 0}%`}
   </span>
-  ${!isDone && !isFailed ? `<div class="bar-wrap"><div class="bar"></div></div>` : ""}
+  ${!isDone && !isFailed ? `<div class="bar-wrap"><div class="bar" id="progress-bar"></div></div><span id="pct-label">${progressPct ?? 0}%</span>` : ""}
   ${isDone && videoUrl ? `
     <video controls autoplay>
       <source src="${videoUrl}" type="video/mp4"/>
     </video>
     <a class="dl" href="${videoUrl}" download>Download MP4</a>` : ""}
   ${isFailed ? `<p class="err">${(status as { error: string }).error}</p>` : ""}
-  ${!isDone && !isFailed ? `<p class="note">This page refreshes every 3 seconds automatically.</p>` : ""}
+  ${!isDone && !isFailed ? `<p class="note" id="poll-note">Checking progress…</p>` : ""}
   <p class="note">Video ID: ${vid}</p>
 </body>
+<script>
+(function() {
+  var isDone = ${JSON.stringify(isDone)};
+  var isFailed = ${JSON.stringify(isFailed)};
+  if (isDone || isFailed) return;
+  var videoId = ${JSON.stringify(vid)};
+  var interval = setInterval(function() {
+    fetch('/video/' + videoId, { headers: { 'Accept': 'application/json' } })
+      .then(function(r) { return r.json(); })
+      .then(function(data) {
+        if (data.status === 'done') {
+          clearInterval(interval);
+          window.location.reload();
+        } else if (data.status === 'failed') {
+          clearInterval(interval);
+          window.location.reload();
+        } else if (data.status === 'rendering') {
+          var pct = Math.round((data.progress || 0) * 100);
+          var bar = document.getElementById('progress-bar');
+          var lbl = document.getElementById('pct-label');
+          var badge = document.querySelector('.badge');
+          if (bar) bar.style.width = pct + '%';
+          if (lbl) lbl.textContent = pct + '%';
+          if (badge) badge.textContent = 'Rendering… ' + pct + '%';
+          var note = document.getElementById('poll-note');
+          if (note) note.textContent = 'Last checked: ' + new Date().toLocaleTimeString();
+        }
+      })
+      .catch(function() {});
+  }, 2000);
+})();
+</script>
 </html>`;
 
   return c.html(html, isDone ? 200 : isFailed ? 500 : 202);
+});
+
+// /video/:videoId/download — serve MP4 binary directly
+server.app.get("/video/:videoId/download", async (c) => {
+  const vid = c.req.param("videoId");
+  if (!vid || vid.includes("..") || vid.includes("/") || vid.includes("\\")) {
+    return c.text("Invalid videoId.", 400);
+  }
+  const status = await readRenderStatus(vid);
+  if (status?.status !== "done") {
+    return c.text("Video not ready yet.", 404);
+  }
+  const filePath = join(OUTPUT_DIR, status.filename);
+  if (!existsSync(filePath)) {
+    return c.text("File not found on disk.", 404);
+  }
+  const data = await readFile(filePath);
+  return new Response(data.buffer as ArrayBuffer, {
+    status: 200,
+    headers: {
+      "Content-Type": "video/mp4",
+      "Content-Disposition": `attachment; filename="${status.filename}"`,
+      "Content-Length": String(data.length),
+      "Cache-Control": "no-store",
+    },
+  });
 });
 
 // Serve rendered video files (legacy /download/:filename kept for backward compat)
