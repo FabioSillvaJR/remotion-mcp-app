@@ -23,9 +23,17 @@ import { renderProject, OUTPUT_DIR } from "./render.js";
 
 const port = process.env.PORT ? parseInt(process.env.PORT) : 3000;
 
+function baseUrl(): string {
+  // BASE_URL takes priority (set this in EasyPanel/Docker to your public domain)
+  return (
+    process.env.BASE_URL ??
+    process.env.MCP_URL ??
+    `http://localhost:${port}`
+  ).replace(/\/$/, "");
+}
+
 function playerUrl(sessionId: string): string {
-  const base = process.env.MCP_URL ?? `http://localhost:${port}`;
-  return `${base}/player/${sessionId}`;
+  return `${baseUrl()}/player/${sessionId}`;
 }
 
 const server = new MCPServer({
@@ -198,8 +206,7 @@ server.tool(
     }
     try {
       const filename = await renderProject(sid, project);
-      const base = process.env.MCP_URL ?? `http://localhost:${port}`;
-      const downloadUrl = `${base}/download/${filename}`;
+      const downloadUrl = `${baseUrl()}/download/${filename}`;
       return text(
         [
           `Video rendered successfully.`,
@@ -213,14 +220,14 @@ server.tool(
   }
 );
 
-// --- Static routes ---
+// --- Static routes (registered directly on server.app so mcp-use preserves them) ---
 
-server.get("/.well-known/openai-apps-challenge", (c) => {
+server.app.get("/.well-known/openai-apps-challenge", (c) => {
   return c.text("gP0NHv0ywqzsT3-iJ5is_xR6HysaW9Gbls7TeneGl8M");
 });
 
 // Serve the standalone player HTML
-server.get("/player/:sessionId", async (c) => {
+server.app.get("/player/:sessionId", async (c) => {
   const playerBundlePath = join(process.cwd(), "dist", "player-bundle.js");
   let bundleJs = "";
   try {
@@ -251,7 +258,7 @@ server.get("/player/:sessionId", async (c) => {
 });
 
 // Return project data as JSON (used by the player page)
-server.get("/api/project/:sessionId", (c) => {
+server.app.get("/api/project/:sessionId", (c) => {
   const sid = c.req.param("sessionId");
   const project = getCompiledProject(sid);
   if (!project) {
@@ -261,7 +268,7 @@ server.get("/api/project/:sessionId", (c) => {
 });
 
 // Trigger server-side render
-server.post("/render/:sessionId", async (c) => {
+server.app.post("/render/:sessionId", async (c) => {
   const sid = c.req.param("sessionId");
   const project = getSessionProject(sid);
   if (!project) {
@@ -276,7 +283,7 @@ server.post("/render/:sessionId", async (c) => {
 });
 
 // Serve rendered video files from /data-criacoes
-server.get("/download/:filename", async (c) => {
+server.app.get("/download/:filename", async (c) => {
   const filename = c.req.param("filename");
   // Basic path traversal protection
   if (filename.includes("..") || filename.includes("/") || filename.includes("\\")) {
