@@ -15,7 +15,8 @@
   ],
   "main": "dist/index.js",
   "scripts": {
-    "build": "NODE_OPTIONS='--max-old-space-size=8192' mcp-use build",
+    "build:player": "esbuild player/index.tsx --bundle --outfile=dist/player-bundle.js --platform=browser --format=iife --target=es2020 --jsx=automatic",
+    "build": "NODE_OPTIONS='--max-old-space-size=8192' mcp-use build && npm run build:player",
     "dev": "mcp-use dev",
     "start": "mcp-use start",
     "deploy": "mcp-use deploy",
@@ -23,8 +24,11 @@
   },
   "dependencies": {
     "@paper-design/shaders-react": "^0.0.71",
+    "@remotion/bundler": "4.0.268",
     "@remotion/player": "4.0.268",
+    "@remotion/renderer": "4.0.268",
     "@remotion/transitions": "4.0.268",
+    "esbuild": "^0.25.0",
     "mcp-use": "^1.21.4",
     "node-mocks-http": "^1.17.2",
     "react": "^19.2.0",

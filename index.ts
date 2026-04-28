@@ -1,5 +1,8 @@
 import { MCPServer, text } from "mcp-use/server";
 import { z } from "zod";
+import { readFile } from "node:fs/promises";
+import { join } from "node:path";
+import { existsSync } from "node:fs";
 import { RULE_INDEX } from "./rules/index.js";
 import { RULE_REACT_CODE } from "./rules/react-code.js";
 import { RULE_REMOTION_ANIMATIONS } from "./rules/remotion-animations.js";
@@ -14,9 +17,16 @@ import {
   failProject,
   formatZodIssues,
   getSessionProject,
+  getCompiledProject,
 } from "./utils.js";
+import { renderProject, OUTPUT_DIR } from "./render.js";
 
 const port = process.env.PORT ? parseInt(process.env.PORT) : 3000;
+
+function playerUrl(sessionId: string): string {
+  const base = process.env.MCP_URL ?? `http://localhost:${port}`;
+  return `${base}/player/${sessionId}`;
+}
 
 const server = new MCPServer({
   name: "remotion-mcp",
@@ -158,13 +168,129 @@ server.tool(
     if (previous) {
       statusLines.push("Merged with previous project.");
     }
+    statusLines.push(`Player URL: ${playerUrl(sessionId)}`);
 
     return compileAndRespondWithProject(parseResult.data, sessionId, statusLines, "create_video");
   }
 );
 
+// --- render_video tool ---
+
+const renderVideoSchema = z.object({
+  sessionId: z.string().optional().describe(
+    "Session ID returned by create_video. If omitted, the current session is used."
+  ),
+});
+
+server.tool(
+  {
+    name: "render_video",
+    description:
+      "Render the current video project to an MP4 file saved in the /data-criacoes volume. " +
+      "Returns the download URL when complete. Call this after create_video when the user wants a rendered file.",
+    schema: renderVideoSchema as any,
+  },
+  async (rawParams: z.infer<typeof renderVideoSchema>, ctx) => {
+    const sid = rawParams.sessionId ?? ctx.session?.sessionId ?? "default";
+    const project = getSessionProject(sid);
+    if (!project) {
+      return text(`No video project found for session "${sid}". Call create_video first.`);
+    }
+    try {
+      const filename = await renderProject(sid, project);
+      const base = process.env.MCP_URL ?? `http://localhost:${port}`;
+      const downloadUrl = `${base}/download/${filename}`;
+      return text(
+        [
+          `Video rendered successfully.`,
+          `Download: ${downloadUrl}`,
+          `Saved to: ${OUTPUT_DIR}/${filename}`,
+        ].join("\n")
+      );
+    } catch (err) {
+      return text(`Render failed: ${(err as Error).message}`);
+    }
+  }
+);
+
+// --- Static routes ---
+
 server.get("/.well-known/openai-apps-challenge", (c) => {
   return c.text("gP0NHv0ywqzsT3-iJ5is_xR6HysaW9Gbls7TeneGl8M");
+});
+
+// Serve the standalone player HTML
+server.get("/player/:sessionId", async (c) => {
+  const playerBundlePath = join(process.cwd(), "dist", "player-bundle.js");
+  let bundleJs = "";
+  try {
+    bundleJs = await readFile(playerBundlePath, "utf-8");
+  } catch {
+    bundleJs = 'document.getElementById("root").textContent = "Player bundle not built. Run npm run build:player.";';
+  }
+
+  const html = `<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Remotion Player</title>
+  <style>
+    *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+    body { background: #090909; }
+    @keyframes spin { to { transform: rotate(360deg); } }
+  </style>
+</head>
+<body>
+  <div id="root"></div>
+  <script>${bundleJs}</script>
+</body>
+</html>`;
+
+  return c.html(html);
+});
+
+// Return project data as JSON (used by the player page)
+server.get("/api/project/:sessionId", (c) => {
+  const sid = c.req.param("sessionId");
+  const project = getCompiledProject(sid);
+  if (!project) {
+    return c.json({ error: "Session not found or not yet compiled." }, 404);
+  }
+  return c.json(project);
+});
+
+// Trigger server-side render
+server.post("/render/:sessionId", async (c) => {
+  const sid = c.req.param("sessionId");
+  const project = getSessionProject(sid);
+  if (!project) {
+    return c.json({ error: `No project found for session "${sid}". Call create_video first.` }, 404);
+  }
+  try {
+    const filename = await renderProject(sid, project);
+    return c.json({ filename });
+  } catch (err) {
+    return c.json({ error: (err as Error).message }, 500);
+  }
+});
+
+// Serve rendered video files from /data-criacoes
+server.get("/download/:filename", async (c) => {
+  const filename = c.req.param("filename");
+  // Basic path traversal protection
+  if (filename.includes("..") || filename.includes("/") || filename.includes("\\")) {
+    return c.text("Invalid filename.", 400);
+  }
+  const filePath = join(OUTPUT_DIR, filename);
+  if (!existsSync(filePath)) {
+    return c.text("File not found.", 404);
+  }
+  const data = await readFile(filePath);
+  return c.body(data, 200, {
+    "Content-Type": "video/mp4",
+    "Content-Disposition": `attachment; filename="${filename}"`,
+  });
 });
 
 await server.listen(port);

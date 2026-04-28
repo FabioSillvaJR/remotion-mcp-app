@@ -356,6 +356,7 @@ export type ProjectVideoInput = {
 };
 
 const sessionProjects = new Map<string, SessionProjectState>();
+const compiledProjects = new Map<string, VideoProjectData>();
 const MAX_SESSION_PROJECTS = 250;
 
 function buildProjectData(
@@ -421,6 +422,21 @@ function rememberSessionProject(sessionId: string, project: SessionProjectState)
     }
     sessionProjects.delete(oldestKey);
   }
+}
+
+function rememberCompiledProject(sessionId: string, data: VideoProjectData): void {
+  if (!sessionId) return;
+  if (compiledProjects.has(sessionId)) compiledProjects.delete(sessionId);
+  compiledProjects.set(sessionId, data);
+  while (compiledProjects.size > MAX_SESSION_PROJECTS) {
+    const oldest = compiledProjects.keys().next().value;
+    if (typeof oldest === "string") compiledProjects.delete(oldest);
+    else break;
+  }
+}
+
+export function getCompiledProject(sessionId: string): VideoProjectData | null {
+  return compiledProjects.get(sessionId) ?? null;
 }
 
 export function failProject(
@@ -509,6 +525,8 @@ export async function compileAndRespondWithProject(
     defaultProps,
     inputProps,
   });
+
+  rememberCompiledProject(sessionId, projectData);
 
   return widget({
     props: { videoProject: JSON.stringify(projectData) },
