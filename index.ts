@@ -21,7 +21,7 @@ import {
   loadVideoVersion,
   getLatestVersionNumber,
 } from "./utils.js";
-import { renderProject, OUTPUT_DIR } from "./render.js";
+import { startRenderProject, readRenderStatus, OUTPUT_DIR } from "./render.js";
 
 const port = process.env.PORT ? parseInt(process.env.PORT) : 3000;
 
@@ -323,8 +323,8 @@ server.tool(
   {
     name: "render_video",
     description:
-      "Render a video project to MP4. Requires the videoId returned by create_video. " +
-      "Returns a download URL when complete.",
+      "Start rendering a video to MP4. Returns immediately — rendering runs in the background. " +
+      "Returns a status URL (/video/<videoId>) where the user can track progress and download the file when done.",
     schema: renderVideoSchema as any,
   },
   async (rawParams: z.infer<typeof renderVideoSchema>) => {
@@ -335,19 +335,16 @@ server.tool(
       return text(`No video found with ID "${videoId}". Call create_video first.`);
     }
 
-    try {
-      const filename = await renderProject(videoId, project);
-      const downloadUrl = `${baseUrl()}/download/${filename}`;
-      return text(
-        [
-          `Video rendered successfully.`,
-          `Download: ${downloadUrl}`,
-          `Saved to: ${OUTPUT_DIR}/${filename}`,
-        ].join("\n")
-      );
-    } catch (err) {
-      return text(`Render failed: ${(err as Error).message}`);
-    }
+    startRenderProject(videoId, project);
+
+    const statusUrl = `${baseUrl()}/video/${videoId}`;
+    return text(
+      [
+        `Render started for video "${project.title}".`,
+        `Status & download: ${statusUrl}`,
+        `The user can open this URL to track progress and download the MP4 when ready.`,
+      ].join("\n")
+    );
   }
 );
 
@@ -391,34 +388,100 @@ server.app.get("/player/:videoId", async (c) => {
 // Return project data as JSON (used by the player page)
 server.app.get("/api/project/:videoId", async (c) => {
   const vid = c.req.param("videoId");
-  // Try compiled bundle in memory first (fastest path)
   const compiled = getCompiledProject(vid);
-  if (compiled) {
-    return c.json(compiled);
-  }
-  // Fallback: not yet compiled in this instance (e.g. after restart)
+  if (compiled) return c.json(compiled);
   return c.json({ error: "Project not found or not yet compiled." }, 404);
 });
 
-// Trigger server-side render via HTTP
-server.app.post("/render/:videoId", async (c) => {
+// /video/:videoId — render status page + binary download when done
+server.app.get("/video/:videoId", async (c) => {
   const vid = c.req.param("videoId");
-  const project = await loadVideoVersion(vid);
-  if (!project) {
-    return c.json({ error: `No project found for videoId "${vid}". Call create_video first.` }, 404);
+
+  // Validate: no path traversal
+  if (!vid || vid.includes("..") || vid.includes("/") || vid.includes("\\")) {
+    return c.text("Invalid videoId.", 400);
   }
-  try {
-    const filename = await renderProject(vid, project);
-    return c.json({ filename });
-  } catch (err) {
-    return c.json({ error: (err as Error).message }, 500);
+
+  const status = await readRenderStatus(vid);
+
+  // JSON API if client requests it
+  const accept = c.req.header("accept") ?? "";
+  if (accept.includes("application/json")) {
+    if (!status) return c.json({ status: "not_started" });
+    return c.json(status);
   }
+
+  // Binary download: if done and client accepts video or has ?download param
+  if (status?.status === "done") {
+    const wantsDownload = c.req.query("download") !== undefined || accept.includes("video/");
+    if (wantsDownload) {
+      const filePath = join(OUTPUT_DIR, status.filename);
+      if (!existsSync(filePath)) return c.text("File not found.", 404);
+      const data = await readFile(filePath);
+      return c.body(data, 200, {
+        "Content-Type": "video/mp4",
+        "Content-Disposition": `attachment; filename="${status.filename}"`,
+      });
+    }
+  }
+
+  // HTML status page
+  const progressPct = status?.status === "rendering" ? Math.round(status.progress * 100) : null;
+  const isDone = status?.status === "done";
+  const isFailed = status?.status === "failed";
+  const videoUrl = isDone ? `/video/${vid}?download` : null;
+
+  const html = `<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8"/>
+  <meta name="viewport" content="width=device-width,initial-scale=1"/>
+  <title>Render — ${vid}</title>
+  ${!isDone ? `<meta http-equiv="refresh" content="3"/>` : ""}
+  <style>
+    *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+    body { background: #0d0d0d; color: #e8e8e8; font-family: system-ui, sans-serif;
+           display: flex; flex-direction: column; align-items: center;
+           justify-content: center; min-height: 100vh; gap: 24px; padding: 32px; }
+    h1 { font-size: 1.4rem; font-weight: 600; }
+    .badge { display: inline-block; padding: 4px 14px; border-radius: 99px; font-size: .85rem; font-weight: 600; }
+    .badge.rendering { background: #2a3a8a; color: #aac0ff; }
+    .badge.done      { background: #1a4a2a; color: #7dffa0; }
+    .badge.failed    { background: #4a1a1a; color: #ff9090; }
+    .bar-wrap { width: 320px; height: 8px; background: #222; border-radius: 4px; overflow: hidden; }
+    .bar      { height: 100%; background: #5b8cff; border-radius: 4px;
+                transition: width .4s ease; width: ${progressPct ?? 0}%; }
+    video { max-width: min(860px, 100%); border-radius: 8px; background: #000; }
+    a.dl { display: inline-block; padding: 12px 32px; background: #5b8cff; color: #fff;
+           border-radius: 8px; font-weight: 600; text-decoration: none; font-size: 1rem; }
+    a.dl:hover { background: #3a6ae8; }
+    .err { color: #ff9090; font-size: .9rem; max-width: 480px; text-align: center; }
+    .note { color: #555; font-size: .8rem; }
+  </style>
+</head>
+<body>
+  <h1>Video Render</h1>
+  <span class="badge ${status?.status ?? "rendering"}">
+    ${isDone ? "Done" : isFailed ? "Failed" : `Rendering… ${progressPct ?? 0}%`}
+  </span>
+  ${!isDone && !isFailed ? `<div class="bar-wrap"><div class="bar"></div></div>` : ""}
+  ${isDone && videoUrl ? `
+    <video controls autoplay>
+      <source src="${videoUrl}" type="video/mp4"/>
+    </video>
+    <a class="dl" href="${videoUrl}" download>Download MP4</a>` : ""}
+  ${isFailed ? `<p class="err">${(status as { error: string }).error}</p>` : ""}
+  ${!isDone && !isFailed ? `<p class="note">This page refreshes every 3 seconds automatically.</p>` : ""}
+  <p class="note">Video ID: ${vid}</p>
+</body>
+</html>`;
+
+  return c.html(html, isDone ? 200 : isFailed ? 500 : 202);
 });
 
-// Serve rendered video files from /data-criacoes
+// Serve rendered video files (legacy /download/:filename kept for backward compat)
 server.app.get("/download/:filename", async (c) => {
   const filename = c.req.param("filename");
-  // Basic path traversal protection
   if (filename.includes("..") || filename.includes("/") || filename.includes("\\")) {
     return c.text("Invalid filename.", 400);
   }
