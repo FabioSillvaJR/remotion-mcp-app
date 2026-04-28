@@ -15,6 +15,6 @@
     "forceConsistentCasingInFileNames": true,
     "skipLibCheck": true
   },
-  "include": ["index.ts", "types.ts", "cheatsheet.ts", "resources/**/*", "rules/**/*"],
+  "include": ["**/*.ts"],
   "exclude": ["node_modules", "dist", ".mcp-use"]
 }
