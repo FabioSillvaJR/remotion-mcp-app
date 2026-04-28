@@ -264,6 +264,43 @@ server.tool(
   }
 );
 
+// --- get_video_code tool ---
+
+server.tool(
+  {
+    name: "get_video_code",
+    description:
+      "Returns the full source code and metadata of the current video project in this session. " +
+      "Use this before calling update_video to inspect the current files and understand what needs to change. " +
+      "Requires a prior create_video call in the same session.",
+    schema: z.object({}),
+  },
+  async (_params: Record<string, never>, ctx) => {
+    const sessionId = ctx.session?.sessionId ?? "default";
+    const project = getSessionProject(sessionId);
+    if (!project) {
+      return text("No video project found in this session. Call create_video first.");
+    }
+
+    const filesSummary = Object.entries(project.files)
+      .map(([path, code]) => `--- ${path} ---\n${code}`)
+      .join("\n\n");
+
+    return text(
+      [
+        `Title: ${project.title}`,
+        `Entry file: ${project.entryFile}`,
+        `Resolution: ${project.width}×${project.height}`,
+        `FPS: ${project.fps}`,
+        `Duration: ${project.durationInFrames} frames (${(project.durationInFrames / project.fps).toFixed(2)}s)`,
+        `Files (${Object.keys(project.files).length}):`,
+        "",
+        filesSummary,
+      ].join("\n")
+    );
+  }
+);
+
 // --- render_video tool ---
 
 const renderVideoSchema = z.object({
