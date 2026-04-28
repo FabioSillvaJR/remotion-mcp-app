@@ -7,48 +7,10 @@ import React, {
   type ReactNode,
 } from "react";
 import { Player } from "@remotion/player";
-import * as ReactModule from "react";
-import * as ReactJsxRuntimeModule from "react/jsx-runtime";
-import * as ReactJsxDevRuntimeModule from "react/jsx-dev-runtime";
-import * as RemotionModule from "remotion";
 import type { VideoProjectData } from "../types";
-import { RUNTIME_BUNDLE_GLOBAL, RUNTIME_PACKAGE_GLOBAL } from "../types";
-
-// ---------------------------------------------------------------------------
-// Bootstrap runtime packages so the video bundle can resolve its imports
-// ---------------------------------------------------------------------------
-
-const runtimePackages: Record<string, Record<string, unknown>> = {
-  react: ReactModule as Record<string, unknown>,
-  "react/jsx-runtime": ReactJsxRuntimeModule as Record<string, unknown>,
-  "react/jsx-dev-runtime": ReactJsxDevRuntimeModule as Record<string, unknown>,
-  remotion: RemotionModule as Record<string, unknown>,
-};
-(globalThis as Record<string, unknown>)[RUNTIME_PACKAGE_GLOBAL] = runtimePackages;
-
-// ---------------------------------------------------------------------------
-// Bundle evaluation
-// ---------------------------------------------------------------------------
-
-function compileBundle(
-  bundleCode: string
-): { component: React.ComponentType<Record<string, unknown>> } | { error: string } {
-  try {
-    const fn = new Function(
-      `${bundleCode}\nreturn typeof ${RUNTIME_BUNDLE_GLOBAL} !== "undefined" ? ${RUNTIME_BUNDLE_GLOBAL} : null;`
-    );
-    const exports = fn() as { default?: unknown } | null;
-    if (!exports || typeof exports !== "object") {
-      return { error: "Bundle did not return exports." };
-    }
-    if (typeof exports.default !== "function") {
-      return { error: "Bundle must export a default React component." };
-    }
-    return { component: exports.default as React.ComponentType<Record<string, unknown>> };
-  } catch (e) {
-    return { error: (e as Error).message };
-  }
-}
+// Re-use the exact same compileBundle + ensureRuntimePackages that powers the
+// MCP widget — guarantees identical evaluation behaviour in the browser.
+import { compileBundle } from "../resources/remotion-player/components/CodeComposition";
 
 // ---------------------------------------------------------------------------
 // Error boundary
