@@ -149,7 +149,7 @@ server.tool(
     }
 
     // Merge with previous session state (if any)
-    const previous = getSessionProject(sessionId);
+    const previous = await getSessionProject(sessionId);
     const mergedFiles = previous
       ? { ...previous.files, ...files }
       : files;
@@ -214,7 +214,7 @@ server.tool(
   async (rawParams: z.infer<typeof updateVideoSchema>, ctx) => {
     const sessionId = ctx.session?.sessionId ?? "default";
 
-    const previous = getSessionProject(sessionId);
+    const previous = await getSessionProject(sessionId);
     if (!previous) {
       return failProject("No previous project found in this session. Call create_video first.");
     }
@@ -277,7 +277,7 @@ server.tool(
   },
   async (_params: Record<string, never>, ctx) => {
     const sessionId = ctx.session?.sessionId ?? "default";
-    const project = getSessionProject(sessionId);
+    const project = await getSessionProject(sessionId);
     if (!project) {
       return text("No video project found in this session. Call create_video first.");
     }
@@ -319,7 +319,7 @@ server.tool(
   },
   async (rawParams: z.infer<typeof renderVideoSchema>, ctx) => {
     const sid = rawParams.sessionId ?? ctx.session?.sessionId ?? "default";
-    const project = getSessionProject(sid);
+    const project = await getSessionProject(sid);
     if (!project) {
       return text(`No video project found for session "${sid}". Call create_video first.`);
     }
@@ -389,7 +389,7 @@ server.app.get("/api/project/:sessionId", (c) => {
 // Trigger server-side render
 server.app.post("/render/:sessionId", async (c) => {
   const sid = c.req.param("sessionId");
-  const project = getSessionProject(sid);
+  const project = await getSessionProject(sid);
   if (!project) {
     return c.json({ error: `No project found for session "${sid}". Call create_video first.` }, 404);
   }

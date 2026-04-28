@@ -2,6 +2,7 @@ import { text, widget } from "mcp-use/server";
 import { z } from "zod";
 import { build, type Loader, type Plugin } from "esbuild";
 import path from "node:path";
+import { writeFile, readFile, mkdir } from "node:fs/promises";
 import * as ReactModule from "react";
 import * as ReactJsxRuntimeModule from "react/jsx-runtime";
 import * as ReactJsxDevRuntimeModule from "react/jsx-dev-runtime";
@@ -359,6 +360,30 @@ const sessionProjects = new Map<string, SessionProjectState>();
 const compiledProjects = new Map<string, VideoProjectData>();
 const MAX_SESSION_PROJECTS = 250;
 
+const SESSIONS_DIR = process.env.OUTPUT_DIR
+  ? path.join(process.env.OUTPUT_DIR, "sessions")
+  : "/data-criacoes/sessions";
+
+async function saveSessionToDisk(sessionId: string, project: SessionProjectState): Promise<void> {
+  try {
+    await mkdir(SESSIONS_DIR, { recursive: true });
+    const filePath = path.join(SESSIONS_DIR, `${sessionId}.json`);
+    await writeFile(filePath, JSON.stringify(project), "utf-8");
+  } catch {
+    // Non-fatal: in-memory Map is still the primary store
+  }
+}
+
+async function loadSessionFromDisk(sessionId: string): Promise<SessionProjectState | null> {
+  try {
+    const filePath = path.join(SESSIONS_DIR, `${sessionId}.json`);
+    const raw = await readFile(filePath, "utf-8");
+    return JSON.parse(raw) as SessionProjectState;
+  } catch {
+    return null;
+  }
+}
+
 function buildProjectData(
   overrides: Partial<VideoProjectData["meta"]> & { title?: string },
   config: {
@@ -422,6 +447,9 @@ function rememberSessionProject(sessionId: string, project: SessionProjectState)
     }
     sessionProjects.delete(oldestKey);
   }
+
+  // Persist to disk so state survives across instances and restarts
+  saveSessionToDisk(sessionId, project).catch(() => {});
 }
 
 function rememberCompiledProject(sessionId: string, data: VideoProjectData): void {
@@ -459,8 +487,16 @@ export function failProject(
   });
 }
 
-export function getSessionProject(sessionId: string): SessionProjectState | null {
-  return sessionProjects.get(sessionId) ?? null;
+export async function getSessionProject(sessionId: string): Promise<SessionProjectState | null> {
+  const inMemory = sessionProjects.get(sessionId);
+  if (inMemory) return inMemory;
+  // Fallback to disk (handles multi-instance and server restart scenarios)
+  const fromDisk = await loadSessionFromDisk(sessionId);
+  if (fromDisk) {
+    // Restore to memory map for subsequent calls
+    sessionProjects.set(sessionId, fromDisk);
+  }
+  return fromDisk;
 }
 
 export async function compileAndRespondWithProject(
