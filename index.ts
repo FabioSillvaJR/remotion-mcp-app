@@ -105,7 +105,7 @@ server.tool(
 server.tool(
   {
     name: "fetch_captions",
-    description: "Fetch a .srt subtitle file from a URL, parse it, and store it server-side linked to a videoId. Returns a captionsUrl (same-server URL) that the component can fetch at render time without timeout risk. Call this BEFORE generating caption code.",
+    description: "Fetch a .srt subtitle file from a URL, parse it, and store it server-side linked to a videoId. Returns a captionsUrl (same-server URL) that the component can safely fetch during rendering. IMPORTANT: if this tool returns an error, do NOT generate caption code — tell the user their URL is unavailable and ask for a working one.",
     parameters: z.object({
       url: z.string().url().describe("Public URL of the .srt file"),
       videoId: z.string().describe("The videoId this caption belongs to"),
@@ -573,7 +573,7 @@ server.app.get("/video/:videoId", async (c) => {
 </script>
 </html>`;
 
-  return c.html(html, isDone ? 200 : isFailed ? 500 : 202);
+  return c.html(html, isDone ? 200 : 202);
 });
 
 // /video/:videoId/download — serve MP4 binary directly
