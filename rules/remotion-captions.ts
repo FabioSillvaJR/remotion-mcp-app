@@ -1,11 +1,27 @@
-export const RULE_REMOTION_CAPTIONS = `# Remotion Captions — Subtitles from SRT/URL
+export const RULE_REMOTION_CAPTIONS = `# Remotion Captions — Subtitles from SRT
+
+## ⚠️ CRITICAL: Never fetch external URLs inside the component during rendering
+
+During server-side rendering (Chromium headless), external \`fetch()\` calls may timeout or be blocked.
+This causes the error: **"A delayRender() was called but not cleared after 28000ms"**.
+
+### Correct workflow when user provides a .srt URL:
+1. Call \`fetch_captions\` tool with the URL → server fetches and returns the raw SRT text
+2. Embed that text as a \`const\` string directly in the component
+3. Call \`parseSrt({ input: SRT_TEXT })\` on the embedded string — **no fetch at runtime**
+
+This approach works identically in the browser player AND during render — zero network calls at render time.
+
+---
+
+# Remotion Captions — Subtitles from SRT
 
 Use \`@remotion/captions\` to render synchronized subtitles from a .srt file URL.
 
 ## Import
 \`\`\`tsx
 import { parseSrt } from "@remotion/captions";
-import { delayRender, continueRender, useCurrentFrame, useVideoConfig } from "remotion";
+import { AbsoluteFill, useCurrentFrame, useVideoConfig } from "remotion";
 \`\`\`
 
 ## parseSrt return shape
@@ -15,47 +31,49 @@ parseSrt({ input: string }) => {
     text: string;       // subtitle text
     startMs: number;    // start time in milliseconds
     endMs: number;      // end time in milliseconds
-    timestampMs: number;// midpoint (startMs + endMs) / 2
+    timestampMs: number;// midpoint
     confidence: number; // always 1 for SRT
   }>
 }
 \`\`\`
 
-## Complete pattern — fetch SRT from URL + render active caption
+## Step 1 — Get the SRT content
+
+When the user provides a .srt URL, call \`fetch_captions\` with that URL.
+The tool fetches server-side and returns the raw SRT text.
+You MUST do this BEFORE generating the component.
+
+## Step 2 — Embed inline + parse at module level (NO fetch in component)
 
 \`\`\`tsx
 import { parseSrt } from "@remotion/captions";
-import {
-  AbsoluteFill,
-  delayRender,
-  continueRender,
-  useCurrentFrame,
-  useVideoConfig,
-} from "remotion";
-import { useEffect, useState, useRef } from "react";
+import { AbsoluteFill, useCurrentFrame, useVideoConfig } from "remotion";
 
-type Caption = { text: string; startMs: number; endMs: number };
+// ✅ Embed the raw SRT text returned by fetch_captions directly here:
+const SRT_TEXT = \`1
+00:00:00,500 --> 00:00:02,000
+Hello world
+
+2
+00:00:02,500 --> 00:00:05,000
+This is the second line
+\`;
+
+// Parse at module level — synchronous, no fetch, works in both player and renderer
+const { captions } = parseSrt({ input: SRT_TEXT });
+
+// Auto-calculate duration from last caption (add 1s buffer)
+const FPS = 30;
+const lastCue = captions[captions.length - 1];
+const DURATION_IN_FRAMES = lastCue
+  ? Math.ceil(((lastCue.endMs + 1000) / 1000) * FPS)
+  : 150;
 
 export default function VideoWithCaptions() {
   const frame = useCurrentFrame();
   const { fps } = useVideoConfig();
   const currentMs = (frame / fps) * 1000;
 
-  const [captions, setCaptions] = useState<Caption[]>([]);
-  const handle = useRef(delayRender("Loading captions"));
-
-  useEffect(() => {
-    fetch("https://example.com/subtitles.srt")
-      .then((r) => r.text())
-      .then((text) => {
-        const { captions: parsed } = parseSrt({ input: text });
-        setCaptions(parsed);
-        continueRender(handle.current);
-      })
-      .catch(() => continueRender(handle.current));
-  }, []);
-
-  // Find the active caption for the current time
   const active = captions.find(
     (c) => currentMs >= c.startMs && currentMs < c.endMs
   );
@@ -64,7 +82,7 @@ export default function VideoWithCaptions() {
     <AbsoluteFill style={{ background: "#111" }}>
       {/* your main video content here */}
 
-      {/* Subtitle overlay */}
+      {/* Subtitle overlay — bottom center */}
       {active && (
         <AbsoluteFill
           style={{
@@ -97,18 +115,12 @@ export default function VideoWithCaptions() {
 }
 \`\`\`
 
-## durationInFrames from SRT (auto-calculate total duration)
+## durationInFrames for create_video / update_video
 
-When the user provides a SRT URL, calculate the durationInFrames from the last caption's endMs:
-
-\`\`\`tsx
-// After fetching and parsing:
-const lastCue = parsed[parsed.length - 1];
-const totalMs = lastCue ? lastCue.endMs + 500 : 5000; // 500ms buffer after last cue
-const durationInFrames = Math.ceil((totalMs / 1000) * fps);
+Pass the calculated value in the tool call:
 \`\`\`
-
-Or pass it as a fixed value in the create_video call if the user specifies the video length.
+durationInFrames: DURATION_IN_FRAMES  (calculated from last caption endMs + 1s buffer)
+\`\`\`
 
 ## Subtitle style variants
 
@@ -124,6 +136,7 @@ Or pass it as a fixed value in the create_video call if the user specifies the v
   lineHeight: 1.2,
 }}>
   {active.text}
+</div>
 \`\`\`
 
 **Outlined text (no background box):**
@@ -137,6 +150,7 @@ Or pass it as a fixed value in the create_video call if the user specifies the v
   maxWidth: "80%",
 }}>
   {active.text}
+</div>
 \`\`\`
 
 **Bottom bar (full-width strip):**
@@ -148,13 +162,15 @@ Or pass it as a fixed value in the create_video call if the user specifies the v
   padding: "18px 40px", textAlign: "center",
 }}>
   {active.text}
+</div>
 \`\`\`
 
-## Important rules
+## Rules
 
-1. **Always call \`delayRender\` before fetching** and \`continueRender\` in both the success and error handlers — otherwise the renderer hangs waiting for content
-2. **Handle fetch errors** — always call \`continueRender\` in .catch() to avoid hanging renders
-3. **SRT text may contain HTML tags** (\`<i>\`, \`<b>\`) — sanitize or strip them if not needed
-4. The \`handle\` ref pattern (\`useRef(delayRender(...))\`) is required because delayRender must be called once and stored
-5. \`parseSrt\` expects plain text string, not a stream — always \`.text()\` the response first
+1. **Always use \`fetch_captions\` first** when given a URL — never put the URL inside fetch() in the component
+2. **Embed the SRT text as a \`const\` string** at the top of the file — no runtime network calls
+3. **Parse at module level** (outside the component function) — synchronous, zero latency
+4. SRT text may contain HTML tags (\`<i>\`, \`<b>\`) — strip or ignore them in the render
+5. The \`DURATION_IN_FRAMES\` export can be used as the \`durationInFrames\` value in the tool call
 `;
+

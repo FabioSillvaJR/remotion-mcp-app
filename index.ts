@@ -102,6 +102,36 @@ server.tool(
   async () => text(RULE_REMOTION_CAPTIONS)
 );
 
+server.tool(
+  {
+    name: "fetch_captions",
+    description: "Fetch a .srt subtitle file from a URL and return its raw text content. Use this BEFORE generating caption code — embed the returned text inline in the component instead of fetching at render time.",
+    parameters: z.object({
+      url: z.string().url().describe("Public URL of the .srt file"),
+    }),
+  },
+  async ({ url }) => {
+    // Validate URL scheme — only http/https allowed
+    const parsed = new URL(url);
+    if (parsed.protocol !== "http:" && parsed.protocol !== "https:") {
+      return text("Error: only http/https URLs are supported.");
+    }
+    try {
+      const controller = new AbortController();
+      const timer = setTimeout(() => controller.abort(), 15000);
+      const res = await fetch(url, { signal: controller.signal });
+      clearTimeout(timer);
+      if (!res.ok) {
+        return text(`Error: server returned ${res.status} ${res.statusText}`);
+      }
+      const srtText = await res.text();
+      return text(srtText);
+    } catch (err) {
+      return text(`Error fetching captions: ${(err as Error).message}`);
+    }
+  }
+);
+
 // --- Video tool schemas ---
 
 const projectVideoSchema = z.object({
