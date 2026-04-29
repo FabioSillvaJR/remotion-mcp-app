@@ -102,16 +102,19 @@ server.tool(
   async () => text(RULE_REMOTION_CAPTIONS)
 );
 
+const fetchCaptionsSchema = z.object({
+  url: z.string().url().describe("Public URL of the .srt file"),
+  videoId: z.string().describe("The videoId this caption belongs to"),
+});
+
 server.tool(
   {
     name: "fetch_captions",
     description: "Fetch a .srt subtitle file from a URL, parse it, and store it server-side linked to a videoId. Returns a captionsUrl (same-server URL) that the component can safely fetch during rendering. IMPORTANT: if this tool returns an error, do NOT generate caption code — tell the user their URL is unavailable and ask for a working one.",
-    parameters: z.object({
-      url: z.string().url().describe("Public URL of the .srt file"),
-      videoId: z.string().describe("The videoId this caption belongs to"),
-    }),
+    schema: fetchCaptionsSchema as any,
   },
-  async ({ url, videoId }) => {
+  async (rawParams: z.infer<typeof fetchCaptionsSchema>) => {
+    const { url, videoId } = rawParams;
     // Validate inputs
     if (!videoId || videoId.includes("..") || videoId.includes("/") || videoId.includes("\\")) {
       return text("Error: invalid videoId.");
