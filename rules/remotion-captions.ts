@@ -163,4 +163,4 @@ The tool output already shows the ready-to-use value at 30fps and 60fps.
 5. If \`fetch_captions\` returns an error (URL unreachable, 404), do NOT proceed with caption code — tell the user their URL is unavailable and ask for a working one
 6. **Font**: ALWAYS pass \`fontFamily\` (from \`loadFont()\`) to the subtitle \`div\`. NEVER use \`"sans-serif"\` or any hardcoded font string. If the video uses a Google Font, import it at module level and use its \`fontFamily\`. If no font is defined yet, add one consistent with the video design.
 7. **Order**: \`fetch_captions\` requires an existing \`videoId\`. When creating a new video with captions: (1) \`create_video\` → get videoId, (2) \`fetch_captions\` with videoId, (3) \`update_video\` with caption code.
-\`;
+`;
