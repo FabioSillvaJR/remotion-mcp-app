@@ -1,22 +1,138 @@
 export const RULE_REMOTION_CAPTIONS = `# Remotion Captions — Subtitles from SRT
 
-## ⚠️ CRITICAL: Never fetch external URLs inside the component during rendering
+## Workflow
 
-During server-side rendering (Chromium headless), external \`fetch()\` calls may timeout or be blocked.
-This causes the error: **"A delayRender() was called but not cleared after 28000ms"**.
+1. Call \`fetch_captions\` with the SRT URL and the \`videoId\`
+2. The tool saves the parsed captions JSON on the server and returns:
+   - \`captionsUrl\` — a same-server URL (e.g. \`https://your-server/api/captions/<videoId>\`)
+   - \`count\` — number of cues
+   - \`durationMs\` — total duration in ms (use to calculate \`durationInFrames\`)
+3. Write the component using \`delayRender\` + \`fetch(captionsUrl)\`
 
-### Correct workflow when user provides a .srt URL:
-1. Call \`fetch_captions\` tool with the URL → server fetches and returns the raw SRT text
-2. Embed that text as a \`const\` string directly in the component
-3. Call \`parseSrt({ input: SRT_TEXT })\` on the embedded string — **no fetch at runtime**
-
-This approach works identically in the browser player AND during render — zero network calls at render time.
+⚠️ **Never fetch the original external .srt URL inside the component** — it may timeout during rendering.
+The \`captionsUrl\` returned by \`fetch_captions\` is always safe to fetch (same server as the renderer).
 
 ---
 
-# Remotion Captions — Subtitles from SRT
+## Import
+\`\`\`tsx
+import { useCurrentFrame, useVideoConfig, delayRender, continueRender, AbsoluteFill } from "remotion";
+import { useEffect, useState, useRef } from "react";
+\`\`\`
 
-Use \`@remotion/captions\` to render synchronized subtitles from a .srt file URL.
+## Caption type
+\`\`\`ts
+type Caption = { text: string; startMs: number; endMs: number; timestampMs: number; confidence: number };
+\`\`\`
+
+## Complete pattern — fetch from captionsUrl (same-server, safe during render)
+
+Replace CAPTIONS_URL with the exact \`captionsUrl\` returned by \`fetch_captions\`.
+
+\`\`\`tsx
+import {
+  useCurrentFrame, useVideoConfig,
+  delayRender, continueRender, AbsoluteFill,
+} from "remotion";
+import { useEffect, useState, useRef } from "react";
+
+type Caption = { text: string; startMs: number; endMs: number };
+
+// Replace with the captionsUrl returned by fetch_captions:
+const CAPTIONS_URL = "https://your-server/api/captions/YOUR_VIDEO_ID";
+
+export default function VideoWithCaptions() {
+  const frame = useCurrentFrame();
+  const { fps } = useVideoConfig();
+  const currentMs = (frame / fps) * 1000;
+
+  const [captions, setCaptions] = useState<Caption[]>([]);
+  const handle = useRef(delayRender("Loading captions"));
+
+  useEffect(() => {
+    fetch(CAPTIONS_URL)
+      .then((r) => r.json())
+      .then((data: Caption[]) => {
+        setCaptions(data);
+        continueRender(handle.current);
+      })
+      .catch(() => continueRender(handle.current));
+  }, []);
+
+  const active = captions.find((c) => currentMs >= c.startMs && currentMs < c.endMs);
+
+  return (
+    <AbsoluteFill style={{ background: "#111" }}>
+      {/* main content here */}
+
+      {active && (
+        <AbsoluteFill style={{ justifyContent: "flex-end", alignItems: "center", paddingBottom: 60, pointerEvents: "none" }}>
+          <div style={{
+            background: "rgba(0,0,0,0.75)",
+            color: "#fff",
+            fontSize: 38,
+            fontFamily: "sans-serif",
+            fontWeight: 600,
+            padding: "10px 28px",
+            borderRadius: 8,
+            maxWidth: "80%",
+            textAlign: "center",
+            lineHeight: 1.4,
+          }}>
+            {active.text}
+          </div>
+        </AbsoluteFill>
+      )}
+    </AbsoluteFill>
+  );
+}
+\`\`\`
+
+## durationInFrames
+
+\`fetch_captions\` returns \`durationMs\`. Use it to set the duration:
+\`\`\`
+durationInFrames = Math.ceil((durationMs / 1000) * fps)
+\`\`\`
+The tool output already shows the ready-to-use value at 30fps and 60fps.
+
+## Subtitle style variants
+
+**TikTok-style large centered:**
+\`\`\`tsx
+<div style={{ color: "#fff", fontSize: 56, fontWeight: 900,
+  textShadow: "0 3px 12px rgba(0,0,0,0.9)", textAlign: "center",
+  maxWidth: "75%", lineHeight: 1.2 }}>
+  {active.text}
+</div>
+\`\`\`
+
+**Outlined (no box):**
+\`\`\`tsx
+<div style={{ color: "#fff", fontSize: 40, fontWeight: 700,
+  WebkitTextStroke: "2px #000", textAlign: "center", maxWidth: "80%" }}>
+  {active.text}
+</div>
+\`\`\`
+
+**Bottom bar (full-width strip):**
+\`\`\`tsx
+<div style={{ position: "absolute", bottom: 0, left: 0, right: 0,
+  background: "rgba(0,0,0,0.8)", color: "#fff", fontSize: 32,
+  fontWeight: 600, padding: "18px 40px", textAlign: "center" }}>
+  {active.text}
+</div>
+\`\`\`
+
+## Rules
+
+1. **Always call \`fetch_captions\` first** — it saves the captions and returns the safe \`captionsUrl\`
+2. **Use the \`captionsUrl\` from the tool response** — never use the original external URL in the component
+3. **Always call \`continueRender\` in both \`.then()\` and \`.catch()\`** to avoid render hangs
+4. **The \`handle\` ref** (\`useRef(delayRender(...))\`) must be stable — created once outside the effect
+5. The data from \`CAPTIONS_URL\` is already parsed JSON (array of captions) — call \`.json()\` not \`.text()\`
+`;
+
 
 ## Import
 \`\`\`tsx

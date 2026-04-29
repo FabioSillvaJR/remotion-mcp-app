@@ -1,7 +1,7 @@
 ﻿import { MCPServer, text } from "mcp-use/server";
 import { z } from "zod";
-import { readFile } from "node:fs/promises";
-import { join } from "node:path";
+import { readFile, writeFile, mkdir } from "node:fs/promises";
+import { join, dirname } from "node:path";
 import { existsSync } from "node:fs";
 import { RULE_INDEX } from "./rules/index.js";
 import { RULE_REACT_CODE } from "./rules/react-code.js";
@@ -105,13 +105,17 @@ server.tool(
 server.tool(
   {
     name: "fetch_captions",
-    description: "Fetch a .srt subtitle file from a URL and return its raw text content. Use this BEFORE generating caption code — embed the returned text inline in the component instead of fetching at render time.",
+    description: "Fetch a .srt subtitle file from a URL, parse it, and store it server-side linked to a videoId. Returns a captionsUrl (same-server URL) that the component can fetch at render time without timeout risk. Call this BEFORE generating caption code.",
     parameters: z.object({
       url: z.string().url().describe("Public URL of the .srt file"),
+      videoId: z.string().describe("The videoId this caption belongs to"),
     }),
   },
-  async ({ url }) => {
-    // Validate URL scheme — only http/https allowed
+  async ({ url, videoId }) => {
+    // Validate inputs
+    if (!videoId || videoId.includes("..") || videoId.includes("/") || videoId.includes("\\")) {
+      return text("Error: invalid videoId.");
+    }
     const parsed = new URL(url);
     if (parsed.protocol !== "http:" && parsed.protocol !== "https:") {
       return text("Error: only http/https URLs are supported.");
@@ -125,7 +129,26 @@ server.tool(
         return text(`Error: server returned ${res.status} ${res.statusText}`);
       }
       const srtText = await res.text();
-      return text(srtText);
+
+      // Parse to get metadata
+      const { parseSrt } = await import("@remotion/captions");
+      const { captions } = parseSrt({ input: srtText });
+      const lastCue = captions[captions.length - 1];
+      const durationMs = lastCue ? lastCue.endMs + 1000 : 0;
+
+      // Save parsed captions JSON server-side
+      const captionsDir = join(process.env.OUTPUT_DIR ?? "/data-criacoes", "videos", videoId);
+      await mkdir(captionsDir, { recursive: true });
+      await writeFile(join(captionsDir, "captions.json"), JSON.stringify(captions), "utf-8");
+
+      const captionsUrl = `${baseUrl()}/api/captions/${videoId}`;
+      return text(
+        `Captions saved.\n` +
+        `captionsUrl: ${captionsUrl}\n` +
+        `count: ${captions.length} cues\n` +
+        `durationMs: ${durationMs} (use durationInFrames: ${Math.ceil((durationMs / 1000) * 30)} at 30fps or ${Math.ceil((durationMs / 1000) * 60)} at 60fps)\n` +
+        `\nUse this URL in the component — it is served from the same server and will never timeout during render.`
+      );
     } catch (err) {
       return text(`Error fetching captions: ${(err as Error).message}`);
     }
@@ -391,6 +414,20 @@ server.tool(
 );
 
 // --- Static routes (registered directly on server.app so mcp-use preserves them) ---
+
+// /api/captions/:videoId — serve parsed captions JSON (saved by fetch_captions tool)
+server.app.get("/api/captions/:videoId", async (c) => {
+  const vid = c.req.param("videoId");
+  if (!vid || vid.includes("..") || vid.includes("/") || vid.includes("\\")) {
+    return c.text("Invalid videoId.", 400);
+  }
+  const filePath = join(process.env.OUTPUT_DIR ?? "/data-criacoes", "videos", vid, "captions.json");
+  if (!existsSync(filePath)) {
+    return c.text("Captions not found. Call fetch_captions first.", 404);
+  }
+  const data = await readFile(filePath, "utf-8");
+  return c.body(data, 200, { "Content-Type": "application/json", "Cache-Control": "no-store" });
+});
 
 server.app.get("/.well-known/openai-apps-challenge", (c) => {
   return c.text("gP0NHv0ywqzsT3-iJ5is_xR6HysaW9Gbls7TeneGl8M");
