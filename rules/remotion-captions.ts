@@ -42,17 +42,24 @@ type Caption = { text: string; startMs: number; endMs: number; timestampMs: numb
 Replace CAPTIONS_URL with the exact \`captionsUrl\` returned by \`fetch_captions\`.
 If captions fail to load (404, network error), the video renders WITHOUT captions instead of hanging.
 
+**Font**: always use the same \`fontFamily\` loaded via \`loadFont()\` (from \`@remotion/google-fonts/...\`) as the rest of the video. If the video uses a custom Google Font, import and call \`loadFont()\` at module level and use its returned \`fontFamily\` in the subtitle \`div\`. Never use \`"sans-serif"\` or a hardcoded string if the project already loads a custom font.
+
 \`\`\`tsx
 import {
   useCurrentFrame, useVideoConfig,
   delayRender, continueRender, AbsoluteFill,
 } from "remotion";
 import { useEffect, useState, useRef } from "react";
+// ✅ Import the same font used in the rest of the video, e.g.:
+import { loadFont } from "@remotion/google-fonts/Montserrat";
 
 type Caption = { text: string; startMs: number; endMs: number };
 
 // ✅ Use ONLY the captionsUrl returned by fetch_captions — never the original .srt URL
 const CAPTIONS_URL = "https://your-server/api/captions/YOUR_VIDEO_ID";
+
+// Load font at module level — same font as the rest of the video
+const { fontFamily } = loadFont("normal", { weights: ["700"] });
 
 export default function VideoWithCaptions() {
   const frame = useCurrentFrame();
@@ -91,8 +98,8 @@ export default function VideoWithCaptions() {
             background: "rgba(0,0,0,0.75)",
             color: "#fff",
             fontSize: 38,
-            fontFamily: "sans-serif",
-            fontWeight: 600,
+            fontFamily,  // ✅ from loadFont() — NOT "sans-serif"
+            fontWeight: 700,
             padding: "10px 28px",
             borderRadius: 8,
             maxWidth: "80%",
@@ -121,6 +128,7 @@ The tool output already shows the ready-to-use value at 30fps and 60fps.
 **TikTok-style large centered:**
 \`\`\`tsx
 <div style={{ color: "#fff", fontSize: 56, fontWeight: 900,
+  fontFamily,  // ✅ from loadFont() — same font as the video
   textShadow: "0 3px 12px rgba(0,0,0,0.9)", textAlign: "center",
   maxWidth: "75%", lineHeight: 1.2 }}>
   {active.text}
@@ -130,6 +138,7 @@ The tool output already shows the ready-to-use value at 30fps and 60fps.
 **Outlined (no box):**
 \`\`\`tsx
 <div style={{ color: "#fff", fontSize: 40, fontWeight: 700,
+  fontFamily,  // ✅ from loadFont()
   WebkitTextStroke: "2px #000", textAlign: "center", maxWidth: "80%" }}>
   {active.text}
 </div>
@@ -139,6 +148,7 @@ The tool output already shows the ready-to-use value at 30fps and 60fps.
 \`\`\`tsx
 <div style={{ position: "absolute", bottom: 0, left: 0, right: 0,
   background: "rgba(0,0,0,0.8)", color: "#fff", fontSize: 32,
+  fontFamily,  // ✅ from loadFont()
   fontWeight: 600, padding: "18px 40px", textAlign: "center" }}>
   {active.text}
 </div>
@@ -151,4 +161,6 @@ The tool output already shows the ready-to-use value at 30fps and 60fps.
 3. **The \`handle\` ref** (\`useRef(delayRender(...))\`) must be created once at module level, not inside the effect
 4. The data from \`CAPTIONS_URL\` is already parsed JSON (array of captions) — call \`.json()\` not \`.text()\`
 5. If \`fetch_captions\` returns an error (URL unreachable, 404), do NOT proceed with caption code — tell the user their URL is unavailable and ask for a working one
-`;
+6. **Font**: ALWAYS pass \`fontFamily\` (from \`loadFont()\`) to the subtitle \`div\`. NEVER use \`"sans-serif"\` or any hardcoded font string. If the video uses a Google Font, import it at module level and use its \`fontFamily\`. If no font is defined yet, add one consistent with the video design.
+7. **Order**: \`fetch_captions\` requires an existing \`videoId\`. When creating a new video with captions: (1) \`create_video\` → get videoId, (2) \`fetch_captions\` with videoId, (3) \`update_video\` with caption code.
+\`;
