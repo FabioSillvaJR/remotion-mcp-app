@@ -14,6 +14,7 @@ Call these tools to learn specific Remotion topics:
 - **rule_remotion_text_animations** — Typewriter effect, word highlighting
 - **rule_remotion_trimming** — Trim start/end of animations with Sequence
 - **rule_remotion_fonts** — Google Fonts: Bebas Neue, Anton, Montserrat, Poppins, Inter, Roboto and more
+- **rule_remotion_captions** — Subtitles from SRT URL: fetch + parseSrt + synchronized overlay
 
 ## Quick Start
 

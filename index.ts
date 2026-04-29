@@ -12,6 +12,7 @@ import { RULE_REMOTION_TRANSITIONS } from "./rules/remotion-transitions.js";
 import { RULE_REMOTION_TEXT_ANIMATIONS } from "./rules/remotion-text-animations.js";
 import { RULE_REMOTION_TRIMMING } from "./rules/remotion-trimming.js";
 import { RULE_REMOTION_FONTS } from "./rules/remotion-fonts.js";
+import { RULE_REMOTION_CAPTIONS } from "./rules/remotion-captions.js";
 import {
   DEFAULT_META,
   compileAndRespondWithProject,
@@ -94,6 +95,11 @@ server.tool(
 server.tool(
   { name: "rule_remotion_fonts", description: "Remotion fonts: load Google Fonts (Bebas Neue, Anton, Montserrat, Poppins, Inter, Roboto, etc.) via @remotion/google-fonts" },
   async () => text(RULE_REMOTION_FONTS)
+);
+
+server.tool(
+  { name: "rule_remotion_captions", description: "Remotion captions: fetch a .srt file from URL, parse with parseSrt, render synchronized subtitles overlay" },
+  async () => text(RULE_REMOTION_CAPTIONS)
 );
 
 // --- Video tool schemas ---

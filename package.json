@@ -25,6 +25,7 @@
   "dependencies": {
     "@paper-design/shaders-react": "^0.0.71",
     "@remotion/bundler": "4.0.268",
+    "@remotion/captions": "^4.0.268",
     "@remotion/google-fonts": "^4.0.268",
     "@remotion/player": "4.0.268",
     "@remotion/renderer": "4.0.268",
