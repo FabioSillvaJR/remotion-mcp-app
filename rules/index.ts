@@ -15,6 +15,8 @@ Call these tools to learn specific Remotion topics:
 - **rule_remotion_trimming** — Trim start/end of animations with Sequence
 - **rule_remotion_fonts** — Google Fonts: Bebas Neue, Anton, Montserrat, Poppins, Inter, Roboto and more
 - **rule_remotion_captions** — Subtitles from SRT URL: fetch + parseSrt + synchronized overlay
+- **rule_remotion_animated_emoji** — Animated Google Noto Emoji via @remotion/animated-emoji + jsDelivr CDN
+- **rule_remotion_iconify** — SVG icons from Iconify CDN (150k+ icons): URL pattern, img tag, color via URL param
 
 ## Quick Start
 

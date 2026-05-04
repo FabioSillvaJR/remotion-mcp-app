@@ -13,6 +13,9 @@ import { RULE_REMOTION_TEXT_ANIMATIONS } from "./rules/remotion-text-animations.
 import { RULE_REMOTION_TRIMMING } from "./rules/remotion-trimming.js";
 import { RULE_REMOTION_FONTS } from "./rules/remotion-fonts.js";
 import { RULE_REMOTION_CAPTIONS } from "./rules/remotion-captions.js";
+import { RULE_REMOTION_ANIMATED_EMOJI } from "./rules/remotion-animated-emoji.js";
+import { RULE_REMOTION_ICONIFY } from "./rules/remotion-iconify.js";
+import { getAvailableEmojis } from "@remotion/animated-emoji";
 import {
   DEFAULT_META,
   compileAndRespondWithProject,
@@ -100,6 +103,96 @@ server.tool(
 server.tool(
   { name: "rule_remotion_captions", description: "Remotion captions: fetch a .srt file from URL, parse with parseSrt, render synchronized subtitles overlay" },
   async () => text(RULE_REMOTION_CAPTIONS)
+);
+
+server.tool(
+  { name: "rule_remotion_animated_emoji", description: "Animated Google Noto Emoji via @remotion/animated-emoji + jsDelivr CDN (no public folder required)" },
+  async () => text(RULE_REMOTION_ANIMATED_EMOJI)
+);
+
+server.tool(
+  { name: "rule_remotion_iconify", description: "SVG icons from Iconify CDN: 150k+ icons, URL pattern, img tag, color via URL param" },
+  async () => text(RULE_REMOTION_ICONIFY)
+);
+
+const searchAnimatedEmojiSchema = z.object({
+  keyword: z.string().describe("Keyword to search for (e.g. 'fire', 'heart', 'rocket')"),
+});
+
+server.tool(
+  {
+    name: "search_animated_emoji",
+    description: "Search available animated emojis by keyword. Returns matching emoji names, tags and duration. Use the returned name directly in the AnimatedEmoji emoji prop.",
+    schema: searchAnimatedEmojiSchema as any,
+  },
+  async (rawParams: z.infer<typeof searchAnimatedEmojiSchema>) => {
+    const { keyword } = rawParams;
+    const kw = keyword.toLowerCase().trim();
+    const all = getAvailableEmojis();
+    const results = all.filter((e) => {
+      if (e.name.toLowerCase().includes(kw)) return true;
+      if (e.tags?.some((t) => t.toLowerCase().includes(kw))) return true;
+      if (e.categories?.some((c) => c.toLowerCase().includes(kw))) return true;
+      return false;
+    });
+    if (results.length === 0) {
+      return text(`No emoji found matching "${keyword}". Try a broader keyword like "face", "heart", "animal".`);
+    }
+    const top = results.slice(0, 20);
+    const lines = top.map((e) => {
+      const tags = (e.tags ?? []).slice(0, 4).join(", ");
+      return `- name: "${e.name}"  |  duration: ${e.durationInSeconds}s  |  tags: ${tags || "(none)"}`;
+    });
+    return text(
+      `Found ${results.length} emoji(s) matching "${keyword}" (showing up to 20):\n\n` +
+      lines.join("\n") +
+      `\n\nUse the name value directly in: <AnimatedEmoji emoji="{name}" calculateSrc={calculateEmojiSrc} />`
+    );
+  }
+);
+
+const searchIconifySchema = z.object({
+  keyword: z.string().describe("Keyword to search for icons (e.g. 'home', 'arrow', 'star')"),
+});
+
+server.tool(
+  {
+    name: "search_iconify",
+    description: "Search Iconify icon library (150k+ SVG icons from 150+ icon sets) by keyword. Returns icon identifiers in prefix:name format. Use the identifier to build the SVG URL: https://api.iconify.design/{prefix}/{name}.svg",
+    schema: searchIconifySchema as any,
+  },
+  async (rawParams: z.infer<typeof searchIconifySchema>) => {
+    const { keyword } = rawParams;
+    const encodedKeyword = encodeURIComponent(keyword.trim());
+    try {
+      const controller = new AbortController();
+      const timer = setTimeout(() => controller.abort(), 10000);
+      const res = await fetch(
+        `https://api.iconify.design/search?query=${encodedKeyword}&limit=50`,
+        { signal: controller.signal }
+      );
+      clearTimeout(timer);
+      if (!res.ok) {
+        return text(`Iconify API error: ${res.status} ${res.statusText}`);
+      }
+      const data = await res.json() as { icons: string[]; total: number };
+      if (!data.icons || data.icons.length === 0) {
+        return text(`No icons found for "${keyword}". Try a simpler keyword.`);
+      }
+      const lines = data.icons.map((id: string) => {
+        const [prefix, name] = id.split(":");
+        return `- ${id}  →  https://api.iconify.design/${prefix}/${name}.svg`;
+      });
+      return text(
+        `Found ${data.total} icon(s) matching "${keyword}" (showing ${data.icons.length}):\n\n` +
+        lines.join("\n") +
+        `\n\nUsage: <img src="https://api.iconify.design/{prefix}/{name}.svg" style={{ width: 64, height: 64 }} />` +
+        `\nColored: append ?color=%23{hex} to the URL (e.g. ?color=%23ffffff for white)`
+      );
+    } catch (err) {
+      return text(`Error fetching icons: ${(err as Error).message}`);
+    }
+  }
 );
 
 const fetchCaptionsSchema = z.object({

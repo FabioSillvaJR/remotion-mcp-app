@@ -24,6 +24,7 @@
   },
   "dependencies": {
     "@paper-design/shaders-react": "^0.0.71",
+    "@remotion/animated-emoji": "4.0.268",
     "@remotion/bundler": "4.0.268",
     "@remotion/captions": "^4.0.268",
     "@remotion/google-fonts": "^4.0.268",
